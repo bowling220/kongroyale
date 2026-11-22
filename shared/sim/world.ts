@@ -226,6 +226,7 @@ export class StaticWorld {
 
   // scratch (allocated once; tools/play attachWorld calls initScratch on a shared-memory world)
   private stamp!: Uint32Array; private gen = 0;
+  private rayStamp!: Uint32Array; private rayGen = 0;
   private cI!: Int32Array; private cK!: Uint8Array; private cNX!: Float64Array; private cNZ!: Float64Array; private cD!: Float64Array;
   private LB!: Int32Array; private nLB = 0; private lcx = 0; private lcz = 0;
   private LV!: Float64Array; private LN!: Uint8Array; private LF!: Uint8Array; private LD!: Uint8Array; private CP!: Int32Array; private CO!: Uint8Array; private STK!: Int32Array;
@@ -234,6 +235,7 @@ export class StaticWorld {
 
   initScratch() {
     this.stamp = new Uint32Array(Math.max(1, this.n)); this.gen = 0;
+    this.rayStamp = new Uint32Array(Math.max(1, this.n)); this.rayGen = 0;
     this.cI = new Int32Array(MAXC); this.cK = new Uint8Array(MAXC);
     this.cNX = new Float64Array(MAXC); this.cNZ = new Float64Array(MAXC); this.cD = new Float64Array(MAXC);
     this.LB = new Int32Array(MAXLB);
@@ -242,6 +244,7 @@ export class StaticWorld {
     this.CP = new Int32Array(W2 * MAXLV); this.CO = new Uint8Array(W2 * MAXLV + 2); this.STK = new Int32Array(W2 * MAXLV);
   }
   private nextGen() { if (++this.gen > 0xfffffff0) { this.stamp.fill(0); this.gen = 1; } return this.gen; }
+  private nextRayGen() { if (++this.rayGen > 0xfffffff0) { this.rayStamp.fill(0); this.rayGen = 1; } return this.rayGen; }
 
   /** the mover's resolve: (x, y, z) is the integrated position, (dx, dy, dz) the motion that got it there this (sub)step */
   resolveMove(x: number, y: number, z: number, dx: number, dy: number, dz: number, r: number, h: number, stepUp: boolean): void {
@@ -858,6 +861,7 @@ export class StaticWorld {
     const ex = ox + dx * out.t, ez = oz + dz * out.t;
     const rx0 = Math.min(ox, ex), rx1 = Math.max(ox, ex), rz0 = Math.min(oz, ez), rz1 = Math.max(oz, ez);
     const cx0 = this.cell(rx0 - 1), cx1 = this.cell(rx1 + 1), cz0 = this.cell(rz0 - 1), cz1 = this.cell(rz1 + 1);
+    const rgen = this.nextRayGen();
     const span = (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
     if (span <= 64) {
       // a diagonal ray's cell rectangle is mostly cells it never enters: skip a cell (grown by the 1 m margin above)
@@ -875,7 +879,7 @@ export class StaticWorld {
           else { const a = (z0 - oz) * iz, b = (z1 - oz) * iz; t0 = Math.max(t0, Math.min(a, b)); t1 = Math.min(t1, Math.max(a, b)); }
           if (t0 > t1) continue;
         }
-        this.rayCell(cz * this.gridN + cx, ox, oy, oz, dx, dy, dz, out, bullets, rx0, rx1, rz0, rz1);
+        this.rayCell(cz * this.gridN + cx, ox, oy, oz, dx, dy, dz, out, bullets, rx0, rx1, rz0, rz1, rgen);
         if (firstHit && out.hit) break cells;
       }
       this.tieX0 = this.tieZ0 = -1;
@@ -890,7 +894,7 @@ export class StaticWorld {
       let tmz = dz !== 0 ? ((dz > 0 ? bz + GRID_CELL - oz : oz - bz) / Math.abs(dz)) : 1e9;
       for (let guard = 0; guard < 400; guard++) {
         // visit this cell and its neighbours across (boxes may straddle)
-        this.rayCell(cz * this.gridN + cx, ox, oy, oz, dx, dy, dz, out, bullets, rx0, rx1, rz0, rz1);
+        this.rayCell(cz * this.gridN + cx, ox, oy, oz, dx, dy, dz, out, bullets, rx0, rx1, rz0, rz1, rgen);
         if ((firstHit && out.hit) || (cx === tcx && cz === tcz)) break;
         if (tmx < tmz) { if (tmx > out.t) break; cx += sx; tmx += tdx; } else { if (tmz > out.t) break; cz += sz; tmz += tdz; }
         if (cx < 0 || cz < 0 || cx >= this.gridN || cz >= this.gridN) break;
@@ -901,9 +905,12 @@ export class StaticWorld {
   }
   private lastCellVisited = -1;
   /** test the boxes of grid cell c; rx0..rz1 bound the ray segment in x/z (a box outside it can't be hit) */
-  private rayCell(c: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, out: Hit, bullets: boolean, rx0: number, rx1: number, rz0: number, rz1: number) {
+  private rayCell(c: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, out: Hit, bullets: boolean, rx0: number, rx1: number, rz0: number, rz1: number, rgen: number) {
+    const rs = this.rayStamp;
     for (let k = this.cellStart[c]; k < this.cellStart[c + 1]; k++) {
       const i = this.cellItems[k];
+      if (rs[i] === rgen) continue;
+      rs[i] = rgen;
       if (bullets ? this.noShoot[i] : this.noWalk[i] || (this.drive && this.noDrive[i])) continue;
       if (this.bx1[i] < rx0 || this.bx0[i] > rx1 || this.bz1[i] < rz0 || this.bz0[i] > rz1) continue;
       this.rayBox(i, ox, oy, oz, dx, dy, dz, out);
